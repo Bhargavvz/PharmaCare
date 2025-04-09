@@ -43,13 +43,13 @@ PharmaCare+ is a comprehensive medication management system designed to help use
 **Backend:**
 - **Framework**: Spring Boot 3
 - **Language**: Java 17
-- **Database**: MySQL 8.0
+- **Database**: PostgreSQL 8.0
 - **Authentication**: Spring Security, JWT (JSON Web Tokens), OAuth2 (Google)
 - **API Documentation**: Swagger/OpenAPI
 - **Build Tool**: Maven
 
 **Database:**
-- MySQL 8.0
+- PostgreSQL 8.0
 
 ## Key Functionality Flowcharts
 
@@ -115,7 +115,7 @@ graph LR
     C --> D[Donation Form Modal];
     D --> E[User enters Medicine Name, Quantity, Notes];
     E --> F{Submit Form};
-    F --> G[Backend: Validate & Create Donation (status: pending)];
+    F --> G[Backend: Validate & Create Donation];
     G -- Success --> H[Donation appears in 'Available Donations' list];
     G -- Failure --> I[Show Error Toast];
     H --> J{Pharmacy Action};
@@ -186,7 +186,7 @@ pharmacare-plus/
 - Java 17 or higher
 - Node.js 16 or higher
 - npm or yarn
-- MySQL 8.0 or higher
+- PostgreSQL 8.0 or higher
 
 ## Setup Instructions
 
@@ -202,6 +202,8 @@ pharmacare-plus/
    spring.datasource.url=jdbc:postgresql://localhost:5432/pharmacare
    spring.datasource.username=your_db_username
    spring.datasource.password=your_db_password
+   spring.datasource.driver-class-name=org.postgresql.Driver
+   spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect
    ```
 
 3. Configure JWT secret (can remain in `application.properties` or move to `-local`):
