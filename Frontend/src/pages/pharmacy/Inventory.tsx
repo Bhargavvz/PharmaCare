@@ -2,24 +2,33 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Package, Plus, Search, Filter, Trash2, Edit } from 'lucide-react';
 import { toast } from 'react-hot-toast';
-import { useAuth } from '../../context/AuthContext';
+import { useAuth, isPharmacyStaffUser } from '../../context/AuthContext';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
-import { mockPharmacyService, mockInventoryService, Pharmacy, InventoryItem } from '../../services/mockDataService';
+import { inventoryService, pharmacyService, PharmacyDto, InventoryItemDto } from '../../services/api';
 
 const Inventory: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { user } = useAuth();
+  const { currentUser } = useAuth();
   const [isLoading, setIsLoading] = useState(true);
-  const [pharmacies, setPharmacies] = useState<Pharmacy[]>([]);
+  const [pharmacies, setPharmacies] = useState<PharmacyDto[]>([]);
   const [selectedPharmacyId, setSelectedPharmacyId] = useState<number | null>(null);
-  const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([]);
+  const [inventoryItems, setInventoryItems] = useState<InventoryItemDto[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState('all');
+  const [currentPage, setCurrentPage] = useState(0);
+  const [totalPages, setTotalPages] = useState(0);
+  const [pageSize] = useState(10);
 
   useEffect(() => {
-    // Redirect if not logged in
-    if (!user) {
+    // Redirect if not logged in or not a pharmacy staff
+    if (!currentUser) {
+      navigate('/pharmacy/login');
+      return;
+    }
+    
+    if (!isPharmacyStaffUser(currentUser)) {
+      toast.error('Access denied. Please log in as pharmacy staff.');
       navigate('/pharmacy/login');
       return;
     }
@@ -28,36 +37,31 @@ const Inventory: React.FC = () => {
     const locationState = location.state as { pharmacyId?: number };
     if (locationState?.pharmacyId) {
       setSelectedPharmacyId(locationState.pharmacyId);
+    } else if (isPharmacyStaffUser(currentUser) && currentUser.pharmacyId) {
+      // Use the pharmacyId from the user's context if available
+      setSelectedPharmacyId(currentUser.pharmacyId);
     }
     
     fetchPharmacies();
-  }, [user, navigate, location]);
+  }, [currentUser, navigate, location]);
 
   useEffect(() => {
     if (selectedPharmacyId) {
       fetchInventoryItems();
     }
-  }, [selectedPharmacyId]);
+  }, [selectedPharmacyId, currentPage, pageSize]);
 
   const fetchPharmacies = async () => {
     setIsLoading(true);
     try {
-      // Simulate API call delay
-      await new Promise(resolve => setTimeout(resolve, 800));
+      // Get pharmacies from API service
+      const pharmacyList = await pharmacyService.getMyPharmacies();
       
-      // Get pharmacies from mock service
-      const mockPharmacies = mockPharmacyService.getPharmacies();
-      
-      // Filter pharmacies by current user if needed
-      const userPharmacies = user?.id 
-        ? mockPharmacies.filter(p => p.ownerId === Number(user.id))
-        : mockPharmacies;
-      
-      setPharmacies(userPharmacies);
+      setPharmacies(pharmacyList);
       
       // If no pharmacy is selected yet but we have pharmacies, select the first one
-      if (!selectedPharmacyId && userPharmacies.length > 0) {
-        setSelectedPharmacyId(userPharmacies[0].id);
+      if (!selectedPharmacyId && pharmacyList.length > 0) {
+        setSelectedPharmacyId(pharmacyList[0].id);
       }
     } catch (error) {
       console.error('Error fetching pharmacies:', error);
@@ -72,18 +76,27 @@ const Inventory: React.FC = () => {
     
     setIsLoading(true);
     try {
-      // Simulate API call delay
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // Get inventory items from API service
+      const response = await inventoryService.getInventoryItems(
+        selectedPharmacyId,
+        currentPage,
+        pageSize,
+        searchTerm || undefined
+      );
       
-      // Get inventory items from mock service
-      const items = mockInventoryService.getInventoryItems(selectedPharmacyId);
-      setInventoryItems(items);
+      setInventoryItems(response.content);
+      setTotalPages(response.totalPages);
     } catch (error) {
       console.error('Error fetching inventory items:', error);
       toast.error('Failed to load inventory items');
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleSearch = () => {
+    setCurrentPage(0); // Reset to first page when searching
+    fetchInventoryItems();
   };
 
   const handleAddItem = () => {
@@ -103,11 +116,11 @@ const Inventory: React.FC = () => {
     
     if (window.confirm('Are you sure you want to delete this item?')) {
       try {
-        // Delete item using mock service
-        await mockInventoryService.deleteInventoryItem(selectedPharmacyId, itemId);
+        // Delete item using API service
+        await inventoryService.deleteInventoryItem(selectedPharmacyId, itemId);
         
-        // Update local state
-        setInventoryItems(prevItems => prevItems.filter(item => item.id !== itemId));
+        // Update local state by fetching updated list
+        fetchInventoryItems();
         toast.success('Item deleted successfully');
       } catch (error) {
         console.error('Error deleting item:', error);
@@ -117,17 +130,11 @@ const Inventory: React.FC = () => {
   };
 
   const filteredItems = inventoryItems.filter(item => {
-    // Apply search filter
-    const matchesSearch = item.medicationName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                          item.batchNumber.toLowerCase().includes(searchTerm.toLowerCase());
-    
     // Apply type filter
-    if (filterType === 'all') return matchesSearch;
-    if (filterType === 'low-stock') return matchesSearch && item.lowStock;
-    if (filterType === 'expiring') {
-      return matchesSearch && item.expiringWithin30Days;
-    }
-    return matchesSearch;
+    if (filterType === 'all') return true;
+    if (filterType === 'low-stock') return item.lowStock;
+    if (filterType === 'expiring') return item.expiringWithin30Days;
+    return true;
   });
 
   if (isLoading && !selectedPharmacyId) {
@@ -149,6 +156,7 @@ const Inventory: React.FC = () => {
                     onChange={(e) => {
                       const pharmacyId = parseInt(e.target.value, 10);
                       setSelectedPharmacyId(pharmacyId);
+                      setCurrentPage(0); // Reset to first page when changing pharmacy
                     }}
                   >
                     {pharmacies.map((pharmacy) => (
@@ -183,11 +191,11 @@ const Inventory: React.FC = () => {
             <p className="mt-1 text-sm text-gray-500">You need to create a pharmacy before managing inventory.</p>
             <div className="mt-6">
               <button
-                onClick={() => navigate('/pharmacy/create')}
+                onClick={() => navigate('/pharmacy/dashboard')}
                 className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
               >
                 <Plus className="w-4 h-4 mr-2" />
-                Create New Pharmacy
+                Return to Dashboard
               </button>
             </div>
           </div>
@@ -204,6 +212,7 @@ const Inventory: React.FC = () => {
                   placeholder="Search inventory..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
+                  onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
                 />
               </div>
               <div className="flex items-center space-x-4 w-full sm:w-auto">
@@ -221,6 +230,12 @@ const Inventory: React.FC = () => {
                     <option value="expiring">Expiring Soon</option>
                   </select>
                 </div>
+                <button
+                  onClick={handleSearch}
+                  className="inline-flex items-center px-4 py-2 border border-gray-300 bg-white rounded-md shadow-sm text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                >
+                  Search
+                </button>
               </div>
             </div>
 
@@ -246,68 +261,158 @@ const Inventory: React.FC = () => {
                 )}
               </div>
             ) : (
-              <div className="bg-white shadow overflow-hidden sm:rounded-md">
-                <ul className="divide-y divide-gray-200">
-                  {filteredItems.map((item) => (
-                    <li key={item.id}>
-                      <div className="px-4 py-4 sm:px-6">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center">
-                            <div className="flex-shrink-0 h-10 w-10 bg-blue-100 rounded-md flex items-center justify-center">
-                              <Package className="h-6 w-6 text-blue-600" />
+              <>
+                <div className="bg-white shadow overflow-hidden sm:rounded-md">
+                  <ul className="divide-y divide-gray-200">
+                    {filteredItems.map((item) => (
+                      <li key={item.id}>
+                        <div className="px-4 py-4 sm:px-6">
+                          <div className="flex items-center justify-between">
+                            <div className="flex-1 min-w-0">
+                              <p className="text-md font-medium text-blue-600 truncate">{item.medicationName}</p>
+                              <p className="mt-1 flex items-center text-sm text-gray-500">
+                                <span>Batch: {item.batchNumber}</span>
+                                <span className="mx-2">•</span>
+                                <span>Qty: {item.quantity}</span>
+                                <span className="mx-2">•</span>
+                                <span>Expires: {new Date(item.expiryDate).toLocaleDateString()}</span>
+                              </p>
                             </div>
-                            <div className="ml-4">
-                              <div className="text-sm font-medium text-blue-600">{item.medicationName}</div>
-                              <div className="text-sm text-gray-500">SKU: {item.batchNumber}</div>
-                            </div>
-                          </div>
-                          <div className="flex items-center">
-                            <div className="mr-8 text-right">
-                              <div className="text-sm font-medium text-gray-900">
-                                ${item.sellingPrice.toFixed(2)}
-                              </div>
-                              <div className={`text-sm ${item.lowStock ? 'text-red-500 font-medium' : 'text-gray-500'}`}>
-                                {item.quantity} in stock
-                              </div>
-                            </div>
-                            <div className="flex space-x-2">
-                              <button
-                                onClick={() => handleEditItem(item.id)}
-                                className="inline-flex items-center p-2 border border-transparent rounded-full shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-                              >
-                                <Edit className="h-4 w-4" />
-                              </button>
-                              <button
-                                onClick={() => handleDeleteItem(item.id)}
-                                className="inline-flex items-center p-2 border border-transparent rounded-full shadow-sm text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                        <div className="mt-2 sm:flex sm:justify-between">
-                          <div className="sm:flex">
-                            <div className="flex items-center text-sm text-gray-500">
-                              <div>Category: {item.medicationType}</div>
-                            </div>
-                          </div>
-                          <div className="mt-2 flex items-center text-sm text-gray-500 sm:mt-0">
-                            <div>
-                              Expires: {new Date(item.expiryDate).toLocaleDateString()}
+                            <div className="flex items-center space-x-2">
+                              <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full 
+                                ${item.lowStock ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'}`}>
+                                {item.lowStock ? 'Low Stock' : 'In Stock'}
+                              </span>
                               {item.expiringWithin30Days && (
-                                <span className="ml-2 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
+                                <span className="px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-yellow-100 text-yellow-800">
                                   Expiring Soon
                                 </span>
                               )}
                             </div>
+                            <div className="ml-5 flex-shrink-0 flex space-x-2">
+                              <button
+                                onClick={() => handleEditItem(item.id)}
+                                className="p-2 rounded-full text-gray-400 hover:text-blue-600 hover:bg-gray-100 focus:outline-none"
+                              >
+                                <Edit className="h-5 w-5" />
+                              </button>
+                              <button
+                                onClick={() => handleDeleteItem(item.id)}
+                                className="p-2 rounded-full text-gray-400 hover:text-red-600 hover:bg-gray-100 focus:outline-none"
+                              >
+                                <Trash2 className="h-5 w-5" />
+                              </button>
+                            </div>
+                          </div>
+                          <div className="mt-2 flex justify-between">
+                            <p className="text-sm text-gray-500">
+                              {item.manufacturer ? `Manufacturer: ${item.manufacturer}` : ''}
+                              {item.category ? (item.manufacturer ? ' • ' : '') + `Category: ${item.category}` : ''}
+                            </p>
+                            <p className="text-sm font-medium text-gray-900">
+                              Price: ${item.sellingPrice.toFixed(2)}
+                            </p>
                           </div>
                         </div>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+                
+                {/* Pagination */}
+                {totalPages > 1 && (
+                  <div className="flex items-center justify-between mt-6">
+                    <div className="flex-1 flex justify-between sm:hidden">
+                      <button
+                        onClick={() => setCurrentPage(prev => Math.max(0, prev - 1))}
+                        disabled={currentPage === 0}
+                        className={`relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white ${
+                          currentPage === 0 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50'
+                        }`}
+                      >
+                        Previous
+                      </button>
+                      <button
+                        onClick={() => setCurrentPage(prev => Math.min(totalPages - 1, prev + 1))}
+                        disabled={currentPage === totalPages - 1}
+                        className={`ml-3 relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white ${
+                          currentPage === totalPages - 1 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50'
+                        }`}
+                      >
+                        Next
+                      </button>
+                    </div>
+                    <div className="hidden sm:flex-1 sm:flex sm:items-center sm:justify-between">
+                      <div>
+                        <p className="text-sm text-gray-700">
+                          Showing page <span className="font-medium">{currentPage + 1}</span> of{' '}
+                          <span className="font-medium">{totalPages}</span>
+                        </p>
                       </div>
-                    </li>
-                  ))}
-                </ul>
-              </div>
+                      <div>
+                        <nav className="relative z-0 inline-flex rounded-md shadow-sm -space-x-px" aria-label="Pagination">
+                          <button
+                            onClick={() => setCurrentPage(0)}
+                            disabled={currentPage === 0}
+                            className={`relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 ${
+                              currentPage === 0 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50'
+                            }`}
+                          >
+                            <span className="sr-only">First</span>
+                            <span>⟪</span>
+                          </button>
+                          <button
+                            onClick={() => setCurrentPage(prev => Math.max(0, prev - 1))}
+                            disabled={currentPage === 0}
+                            className={`relative inline-flex items-center px-2 py-2 border border-gray-300 bg-white text-sm font-medium text-gray-500 ${
+                              currentPage === 0 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50'
+                            }`}
+                          >
+                            <span className="sr-only">Previous</span>
+                            <span>◀</span>
+                          </button>
+                          
+                          {/* Page numbers */}
+                          {[...Array(totalPages).keys()].map(page => (
+                            <button
+                              key={page}
+                              onClick={() => setCurrentPage(page)}
+                              className={`relative inline-flex items-center px-4 py-2 border ${
+                                currentPage === page
+                                  ? 'z-10 bg-blue-50 border-blue-500 text-blue-600'
+                                  : 'border-gray-300 bg-white text-gray-500 hover:bg-gray-50'
+                              } text-sm font-medium`}
+                            >
+                              {page + 1}
+                            </button>
+                          ))}
+                          
+                          <button
+                            onClick={() => setCurrentPage(prev => Math.min(totalPages - 1, prev + 1))}
+                            disabled={currentPage === totalPages - 1}
+                            className={`relative inline-flex items-center px-2 py-2 border border-gray-300 bg-white text-sm font-medium text-gray-500 ${
+                              currentPage === totalPages - 1 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50'
+                            }`}
+                          >
+                            <span className="sr-only">Next</span>
+                            <span>▶</span>
+                          </button>
+                          <button
+                            onClick={() => setCurrentPage(totalPages - 1)}
+                            disabled={currentPage === totalPages - 1}
+                            className={`relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 ${
+                              currentPage === totalPages - 1 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50'
+                            }`}
+                          >
+                            <span className="sr-only">Last</span>
+                            <span>⟫</span>
+                          </button>
+                        </nav>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </>
         )}

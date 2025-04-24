@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Building2, MapPin, Phone, Mail, Globe, FileText } from 'lucide-react';
 import { toast } from 'react-hot-toast';
-import { useAuth } from '../../context/AuthContext';
+import { useAuth, isPharmacyStaffUser } from '../../context/AuthContext';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import { mockPharmacyService } from '../../services/mockDataService';
 
@@ -19,7 +19,7 @@ interface LocationState {
 const CreatePharmacy: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { user } = useAuth();
+  const { currentUser } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
@@ -32,7 +32,7 @@ const CreatePharmacy: React.FC = () => {
 
   useEffect(() => {
     // Redirect if not logged in
-    if (!user) {
+    if (!currentUser) {
       navigate('/pharmacy/login');
       return;
     }
@@ -48,7 +48,7 @@ const CreatePharmacy: React.FC = () => {
         email: state.ownerEmail || '',
       }));
     }
-  }, [user, navigate, location]);
+  }, [currentUser, navigate, location]);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
@@ -81,8 +81,8 @@ const CreatePharmacy: React.FC = () => {
         email: formData.email,
         website: formData.website,
         active: true,
-        ownerId: Number(user?.id),
-        ownerName: user?.firstName ? `${user.firstName} ${user.lastName}` : 'Unknown',
+        ownerId: Number(currentUser?.id),
+        ownerName: currentUser?.firstName ? `${currentUser.firstName} ${currentUser.lastName}` : 'Unknown',
       });
       
       toast.success('Pharmacy created successfully!');
@@ -95,7 +95,7 @@ const CreatePharmacy: React.FC = () => {
     }
   };
 
-  if (!user) {
+  if (!currentUser) {
     return <LoadingSpinner />;
   }
 

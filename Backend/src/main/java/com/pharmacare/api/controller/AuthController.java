@@ -8,6 +8,7 @@ import com.pharmacare.api.dto.PharmacySignupRequestDto;
 import com.pharmacare.api.dto.PharmacyStaffDto;
 import com.pharmacare.api.dto.SignupRequestDto;
 import com.pharmacare.api.dto.UserDto;
+import com.pharmacare.api.dto.ValidatedUserDto;
 import com.pharmacare.api.model.ERole;
 import com.pharmacare.api.model.Pharmacy;
 import com.pharmacare.api.model.PharmacyStaff;
@@ -65,10 +66,24 @@ public class AuthController {
                     )
             );
 
+            UserPrincipal userPrincipal = (UserPrincipal) authentication.getPrincipal();
+            
+            // --- Add Role Check ---
+            boolean isRegularUser = userPrincipal.getAuthorities().stream()
+                    .anyMatch(grantedAuthority -> grantedAuthority.getAuthority().equals(ERole.ROLE_USER.name()));
+            boolean isPharmacyStaff = userPrincipal.getAuthorities().stream()
+                    .anyMatch(grantedAuthority -> grantedAuthority.getAuthority().equals(ERole.ROLE_PHARMACY.name()));
+
+            if (!isRegularUser || isPharmacyStaff) { // Must be USER and explicitly NOT PHARMACY
+                logger.warn("Login attempt failed for user {} via /auth/login: Incorrect role.", loginRequest.getEmail());
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(new ErrorResponseDto("Unauthorized: Access denied for this user type."));
+            }
+            // --- End Role Check ---
+
             SecurityContextHolder.getContext().setAuthentication(authentication);
             String jwt = tokenProvider.generateToken(authentication);
             
-            UserPrincipal userPrincipal = (UserPrincipal) authentication.getPrincipal();
             UserDto userDto = mapToUserDto(userRepository.findById(userPrincipal.getId()).orElseThrow());
 
             return ResponseEntity.ok(new AuthResponseDto(jwt, userDto));
@@ -133,16 +148,29 @@ public class AuthController {
     
     @PostMapping("/pharmacy/signup")
     public ResponseEntity<?> registerPharmacy(@Valid @RequestBody PharmacySignupRequestDto signupRequest) {
-        logger.info("Attempting to register pharmacy with email: {} and admin email: {}", signupRequest.getPharmacyEmail(), signupRequest.getAdminEmail());
-
-        if (userRepository.existsByEmail(signupRequest.getAdminEmail())) {
-            return ResponseEntity.badRequest().body(new ErrorResponseDto("Admin email is already in use!"));
-        }
-        if (pharmacyRepository.existsByRegistrationNumber(signupRequest.getRegistrationNumber())) {
-            return ResponseEntity.badRequest().body(new ErrorResponseDto("Pharmacy registration number already exists!"));
-        }
+        logger.info("Attempting to register pharmacy with name: {}, registration: {}, and admin email: {}", 
+            signupRequest.getPharmacyName(), signupRequest.getRegistrationNumber(), signupRequest.getAdminEmail());
 
         try {
+            // Validate admin email
+            if (userRepository.existsByEmail(signupRequest.getAdminEmail())) {
+                logger.warn("Admin email is already in use: {}", signupRequest.getAdminEmail());
+                return ResponseEntity.badRequest().body(new ErrorResponseDto("Admin email is already in use!"));
+            }
+            
+            // Validate pharmacy registration number
+            if (pharmacyRepository.existsByRegistrationNumber(signupRequest.getRegistrationNumber())) {
+                logger.warn("Pharmacy registration number already exists: {}", signupRequest.getRegistrationNumber());
+                return ResponseEntity.badRequest().body(new ErrorResponseDto("Pharmacy registration number already exists!"));
+            }
+            
+            // Optional pharmacy email validation if provided
+            if (signupRequest.getPharmacyEmail() != null && !signupRequest.getPharmacyEmail().isEmpty() && 
+                userRepository.existsByEmail(signupRequest.getPharmacyEmail())) {
+                logger.warn("Pharmacy email is already in use: {}", signupRequest.getPharmacyEmail());
+                return ResponseEntity.badRequest().body(new ErrorResponseDto("Pharmacy email is already in use!"));
+            }
+
             // Create User for the admin staff
             User adminUser = new User(
                     signupRequest.getAdminFirstName(),
@@ -157,6 +185,8 @@ public class AuthController {
                     .orElseThrow(() -> new RuntimeException("Error: ROLE_PHARMACY is not found."));
             roles.add(pharmacyRole);
             adminUser.setRoles(roles);
+            
+            logger.info("Saving pharmacy admin user: {}", adminUser.getEmail());
             User savedAdminUser = userRepository.save(adminUser);
             logger.info("Pharmacy Admin User registered successfully with ID: {}", savedAdminUser.getId());
 
@@ -168,9 +198,11 @@ public class AuthController {
                     .phone(signupRequest.getPhone())
                     .email(signupRequest.getPharmacyEmail())
                     .website(signupRequest.getWebsite())
-                    .owner(savedAdminUser) // Set the created admin user as the owner? Or should this be separate?
+                    .owner(savedAdminUser)
                     .active(true)
                     .build();
+                    
+            logger.info("Saving pharmacy: {}", pharmacy.getName());
             Pharmacy savedPharmacy = pharmacyRepository.save(pharmacy);
             logger.info("Pharmacy registered successfully with ID: {}", savedPharmacy.getId());
 
@@ -178,31 +210,58 @@ public class AuthController {
             PharmacyStaff adminStaff = PharmacyStaff.builder()
                     .pharmacy(savedPharmacy)
                     .user(savedAdminUser)
-                    .role(PharmacyStaff.StaffRole.ADMIN) // Or OWNER? Needs clarification based on Pharmacy model
+                    .role(PharmacyStaff.StaffRole.ADMIN)
                     .active(true)
                     .build();
-            pharmacyStaffRepository.save(adminStaff);
-            logger.info("Pharmacy Admin Staff created successfully with ID: {}", adminStaff.getId());
+                    
+            logger.info("Saving pharmacy staff: {} {}", adminStaff.getUser().getFirstName(), adminStaff.getUser().getLastName());
+            PharmacyStaff savedAdminStaff = pharmacyStaffRepository.save(adminStaff);
+            logger.info("Pharmacy Admin Staff created successfully with ID: {}", savedAdminStaff.getId());
 
-            // Optionally: Authenticate and return token immediately
-            Authentication authentication = authenticationManager.authenticate(
-                    new UsernamePasswordAuthenticationToken(
-                            signupRequest.getAdminEmail(),
-                            signupRequest.getAdminPassword()
-                    )
-            );
-            SecurityContextHolder.getContext().setAuthentication(authentication);
-            String jwt = tokenProvider.generateToken(authentication);
+            // Authenticate and return token immediately
+            try {
+                Authentication authentication = authenticationManager.authenticate(
+                        new UsernamePasswordAuthenticationToken(
+                                signupRequest.getAdminEmail(),
+                                signupRequest.getAdminPassword()
+                        )
+                );
+                SecurityContextHolder.getContext().setAuthentication(authentication);
+                String jwt = tokenProvider.generateToken(authentication);
 
-            PharmacyStaffDto staffDto = mapToPharmacyStaffDto(adminStaff);
-            
-            return ResponseEntity.ok(new PharmacyAuthResponseDto(jwt, staffDto));
+                PharmacyStaffDto staffDto = mapToPharmacyStaffDto(savedAdminStaff);
+                
+                return ResponseEntity.ok(new PharmacyAuthResponseDto(jwt, staffDto));
+            } catch (Exception authEx) {
+                logger.error("Authentication after pharmacy registration failed", authEx);
+                // Still return success, but client will need to login separately
+                return ResponseEntity.ok(new ErrorResponseDto(HttpStatus.OK.value(), 
+                    "Pharmacy registration successful, but auto-login failed. Please login separately."));
+            }
 
         } catch (Exception e) {
             logger.error("Pharmacy registration error", e);
-            // Consider adding more specific error handling and possibly rollback
+            
+            // If exception occurred after admin user created but before completion, clean up
+            if (userRepository.existsByEmail(signupRequest.getAdminEmail())) {
+                try {
+                    Optional<User> user = userRepository.findByEmail(signupRequest.getAdminEmail());
+                    if (user.isPresent()) {
+                        logger.info("Cleaning up partial registration - deleting user with ID: {}", user.get().getId());
+                        userRepository.delete(user.get());
+                    }
+                } catch (Exception cleanupEx) {
+                    logger.error("Failed to clean up partial registration", cleanupEx);
+                }
+            }
+            
+            // Return proper error message
+            String errorMessage = e.getMessage();
+            if (errorMessage == null || errorMessage.isEmpty()) {
+                errorMessage = "Pharmacy registration failed. Please try again.";
+            }
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(new ErrorResponseDto("Pharmacy registration failed: " + e.getMessage()));
+                    .body(new ErrorResponseDto(errorMessage));
         }
     }
 
@@ -210,14 +269,32 @@ public class AuthController {
     public ResponseEntity<?> authenticatePharmacyStaff(@Valid @RequestBody LoginRequestDto loginRequest) {
         logger.info("Attempting pharmacy staff login for email: {}", loginRequest.getEmail());
         try {
-            Authentication authentication = authenticationManager.authenticate(
-                    new UsernamePasswordAuthenticationToken(
-                            loginRequest.getEmail(),
-                            loginRequest.getPassword()
-                    )
-            );
+            // Check if the user exists first
+            if (!userRepository.existsByEmail(loginRequest.getEmail())) {
+                logger.warn("Pharmacy login attempt failed: Email {} not found", loginRequest.getEmail());
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(new ErrorResponseDto("Authentication failed: Invalid email or password"));
+            }
+            
+            // Try to authenticate
+            Authentication authentication;
+            try {
+                authentication = authenticationManager.authenticate(
+                        new UsernamePasswordAuthenticationToken(
+                                loginRequest.getEmail(),
+                                loginRequest.getPassword()
+                        )
+                );
+            } catch (Exception e) {
+                logger.warn("Pharmacy login authentication failed for email {}: {}", loginRequest.getEmail(), e.getMessage());
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(new ErrorResponseDto("Authentication failed: Invalid email or password"));
+            }
 
+            // Set security context
             SecurityContextHolder.getContext().setAuthentication(authentication);
+            
+            // Generate token
             String jwt = tokenProvider.generateToken(authentication);
 
             UserPrincipal userPrincipal = (UserPrincipal) authentication.getPrincipal();
@@ -227,19 +304,35 @@ public class AuthController {
                 .anyMatch(grantedAuthority -> grantedAuthority.getAuthority().equals(ERole.ROLE_PHARMACY.name()));
                 
             if (!isPharmacyStaff) {
-                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                logger.warn("User {} attempted to login to pharmacy portal but doesn't have ROLE_PHARMACY", loginRequest.getEmail());
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(new ErrorResponseDto("Unauthorized: User is not pharmacy staff."));
             }
 
             // Find associated PharmacyStaff details
             List<PharmacyStaff> staffAssignments = pharmacyStaffRepository.findByUserId(userPrincipal.getId());
             if (staffAssignments.isEmpty()) {
-                 throw new RuntimeException("Pharmacy staff details not found for user ID: " + userPrincipal.getId());
+                logger.error("User {} has ROLE_PHARMACY but no PharmacyStaff records found", loginRequest.getEmail());
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new ErrorResponseDto("Authentication failed: Staff record not found. Please contact support."));
             }
-            // Assuming a user belongs to at least one pharmacy staff role if ROLE_PHARMACY is present
-            PharmacyStaff staff = staffAssignments.get(0); 
+            
+            // Get the active staff assignment
+            PharmacyStaff staff = staffAssignments.stream()
+                .filter(PharmacyStaff::isActive)
+                .findFirst()
+                .orElse(staffAssignments.get(0));
+            
+            // Check if staff is active
+            if (!staff.isActive()) {
+                logger.warn("User {} attempted to login but their staff account is inactive", loginRequest.getEmail());
+                return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(new ErrorResponseDto("Your staff account is currently inactive. Please contact your pharmacy administrator."));
+            }
 
             PharmacyStaffDto staffDto = mapToPharmacyStaffDto(staff);
+            logger.info("Pharmacy staff login successful for: {} {}, pharmacy: {}", 
+                    staffDto.getFirstName(), staffDto.getLastName(), staffDto.getPharmacyName());
 
             return ResponseEntity.ok(new PharmacyAuthResponseDto(jwt, staffDto));
         } catch (Exception e) {
@@ -252,44 +345,51 @@ public class AuthController {
     @GetMapping("/validate")
     public ResponseEntity<?> validateToken() {
         try {
-            logger.info("Token validation request received!");
+            logger.debug("Token validation request received.");
             Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+            if (authentication == null || !authentication.isAuthenticated() || !(authentication.getPrincipal() instanceof UserPrincipal)) {
+                 logger.warn("Validation failed: No valid authentication found in context.");
+                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                         .body(new ErrorResponseDto("Token validation failed: Invalid authentication context."));
+            }
+            
             UserPrincipal userPrincipal = (UserPrincipal) authentication.getPrincipal();
+            logger.debug("Validating token for user ID: {}", userPrincipal.getId());
             
-            logger.info("Token validation for user ID: {}", userPrincipal.getId());
-            
+            // Fetch the full User entity to get roles reliably
             User user = userRepository.findById(userPrincipal.getId())
-                    .orElseThrow(() -> new RuntimeException("User not found"));
+                    .orElseThrow(() -> new RuntimeException("User not found during validation for ID: " + userPrincipal.getId()));
             
-            UserDto userDto = mapToUserDto(user);
-            
-            // Determine if it's a regular user or pharmacy staff
-            boolean isPharmacy = userDto.getRoles().contains(ERole.ROLE_PHARMACY.name());
+            // Check roles from the User entity
+            boolean isPharmacy = user.getRoles().stream()
+                                   .anyMatch(role -> role.getName() == ERole.ROLE_PHARMACY);
+            boolean isUser = user.getRoles().stream()
+                                   .anyMatch(role -> role.getName() == ERole.ROLE_USER);
 
             if (isPharmacy) {
-                // Fetch pharmacy staff details
-                 List<PharmacyStaff> staffAssignments = pharmacyStaffRepository.findByUserId(user.getId());
-                 if (staffAssignments.isEmpty()) {
-                     // It's possible a user has the role but no assignment yet, handle appropriately
-                     // For now, we might log a warning or return without staff details
-                     logger.warn("User ID {} has ROLE_PHARMACY but no PharmacyStaff assignment found.", user.getId());
-                     // Depending on requirements, you might throw an error or just return userDto
-                     // Let's return userDto for now, assuming the role itself might be enough in some contexts
-                     return ResponseEntity.ok(userDto); 
-                     // Alternatively, throw:
-                     // throw new RuntimeException("Pharmacy staff details not found for user ID: " + user.getId());
-                 }
-                
-                // Assuming the first assignment is relevant if multiple exist
-                PharmacyStaff staff = staffAssignments.get(0); 
+                logger.debug("User ID {} has ROLE_PHARMACY. Fetching staff details.", user.getId());
+                List<PharmacyStaff> staffAssignments = pharmacyStaffRepository.findByUserId(user.getId());
+                if (staffAssignments.isEmpty()) {
+                    logger.error("Inconsistency: User ID {} has ROLE_PHARMACY but no PharmacyStaff assignment found.", user.getId());
+                    // Return error - shouldn't happen if signup is correct
+                    return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                            .body(new ErrorResponseDto("User role inconsistency detected."));
+                }
+                PharmacyStaff staff = staffAssignments.get(0); // Assuming first is primary
                 PharmacyStaffDto staffDto = mapToPharmacyStaffDto(staff);
-                logger.info("Found pharmacy staff details for user ID: {}", user.getId());
-                // TODO: Decide if we should return a different DTO or enrich UserDto
-                // For now, just returning the UserDto, frontend can check roles
-                return ResponseEntity.ok(userDto); 
+                logger.debug("Returning PharmacyStaff details for user ID: {}", user.getId());
+                return ResponseEntity.ok(new ValidatedUserDto("pharmacy", staffDto));
+                 
+            } else if (isUser) {
+                logger.debug("User ID {} has ROLE_USER. Returning user details.", user.getId());
+                UserDto userDto = mapToUserDto(user);
+                return ResponseEntity.ok(new ValidatedUserDto("user", userDto));
             } else {
-                logger.info("User ID {} is not a pharmacy staff", user.getId());
-                return ResponseEntity.ok(userDto);
+                 // Handle cases with other roles (e.g., ADMIN) or no expected roles
+                 logger.warn("User ID {} has unrecognized role combination during validation.", user.getId());
+                 // For now, treat as unauthorized for standard flows
+                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                         .body(new ErrorResponseDto("Token validation failed: User role not supported for this context."));
             }
 
         } catch (Exception e) {
@@ -327,16 +427,31 @@ public class AuthController {
     }
     
     private PharmacyStaffDto mapToPharmacyStaffDto(PharmacyStaff staff) {
-        User user = staff.getUser(); // Assuming PharmacyStaff has a getUser() method
+        User user = staff.getUser();
+        Pharmacy pharmacy = staff.getPharmacy();
+        
+        if (user == null) {
+            logger.error("Cannot map PharmacyStaff to DTO: user is null for staff ID {}", staff.getId());
+            throw new IllegalStateException("PharmacyStaff entity has null User reference");
+        }
+        
+        if (pharmacy == null) {
+            logger.error("Cannot map PharmacyStaff to DTO: pharmacy is null for staff ID {}", staff.getId());
+            throw new IllegalStateException("PharmacyStaff entity has null Pharmacy reference");
+        }
+        
         return PharmacyStaffDto.builder()
                 .id(staff.getId())
-                .pharmacyId(staff.getPharmacy().getId()) // Assuming getPharmacy().getId()
+                .pharmacyId(pharmacy.getId())
+                .pharmacyName(pharmacy.getName())
                 .userId(user.getId())
+                .userName(user.getFirstName() + " " + user.getLastName())
+                .userEmail(user.getEmail())
                 .role(staff.getRole())
                 .active(staff.isActive())
                 .createdAt(staff.getCreatedAt())
                 .updatedAt(staff.getUpdatedAt())
-                // Add user details
+                // User details
                 .firstName(user.getFirstName())
                 .lastName(user.getLastName())
                 .email(user.getEmail())

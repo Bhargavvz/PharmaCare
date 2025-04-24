@@ -9,6 +9,8 @@ import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
+import java.util.Arrays;
+import java.util.List;
 
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE)
@@ -16,6 +18,21 @@ public class CorsFilter implements Filter {
 
     @Value("${cors.allowed-origins}")
     private String allowedOrigins;
+    
+    @Value("${cors.allowed-methods}")
+    private String allowedMethods;
+    
+    @Value("${cors.allowed-headers}")
+    private String allowedHeaders;
+    
+    @Value("${cors.exposed-headers}")
+    private String exposedHeaders;
+    
+    @Value("${cors.allow-credentials}")
+    private String allowCredentials;
+    
+    @Value("${cors.max-age}")
+    private String maxAge;
 
     @Override
     public void doFilter(ServletRequest req, ServletResponse res, FilterChain chain)
@@ -28,14 +45,14 @@ public class CorsFilter implements Filter {
         // Debug logging
         System.out.println("CORS Filter: Processing request to " + request.getRequestURI() + " from origin " + origin);
         
-        // Allow all origins that are configured - don't check if allowed, just set it if present
-        if (origin != null) {
+        // Check if the origin is allowed
+        if (origin != null && isAllowedOrigin(origin)) {
             response.setHeader("Access-Control-Allow-Origin", origin);
-            response.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-            response.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Requested-With, Accept, Origin, Access-Control-Request-Method, Access-Control-Request-Headers");
-            response.setHeader("Access-Control-Expose-Headers", "Authorization");
-            response.setHeader("Access-Control-Allow-Credentials", "true");
-            response.setHeader("Access-Control-Max-Age", "3600");
+            response.setHeader("Access-Control-Allow-Methods", allowedMethods);
+            response.setHeader("Access-Control-Allow-Headers", allowedHeaders);
+            response.setHeader("Access-Control-Expose-Headers", exposedHeaders);
+            response.setHeader("Access-Control-Allow-Credentials", allowCredentials);
+            response.setHeader("Access-Control-Max-Age", maxAge);
         }
         
         if ("OPTIONS".equalsIgnoreCase(request.getMethod())) {
@@ -43,6 +60,11 @@ public class CorsFilter implements Filter {
         } else {
             chain.doFilter(req, res);
         }
+    }
+    
+    private boolean isAllowedOrigin(String origin) {
+        List<String> origins = Arrays.asList(allowedOrigins.split(","));
+        return origins.contains(origin);
     }
 
     @Override
