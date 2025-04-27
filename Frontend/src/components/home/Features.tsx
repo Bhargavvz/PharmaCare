@@ -5,7 +5,7 @@ import { Bell, QrCode, Heart, LineChart, Shield, Users, Smartphone, Gift, Chevro
 // Define theme colors (can be reused or defined locally)
 const themes = {
   teal: { iconBg: 'bg-teal-100', iconText: 'text-teal-600', activeBg: 'bg-teal-600', hoverBg: 'hover:bg-teal-50', bulletBg: 'bg-teal-500', borderHover: 'hover:border-teal-300' },
-  emerald: { iconBg: 'bg-emerald-100', iconText: 'text-emerald-600', activeBg: 'bg-emerald-600', hoverBg: 'hover:bg-emerald-50', bulletBg: 'bg-emerald-500', borderHover: 'hover:border-emerald-300' },
+  emerald: { iconBg: 'bg-emeraldi wnt -100', iconText: 'text-emerald-600', activeBg: 'bg-emerald-600', hoverBg: 'hover:bg-emerald-50', bulletBg: 'bg-emerald-500', borderHover: 'hover:border-emerald-300' },
   sky: { iconBg: 'bg-sky-100', iconText: 'text-sky-600', activeBg: 'bg-sky-600', hoverBg: 'hover:bg-sky-50', bulletBg: 'bg-sky-500', borderHover: 'hover:border-sky-300' },
   violet: { iconBg: 'bg-violet-100', iconText: 'text-violet-600', activeBg: 'bg-violet-600', hoverBg: 'hover:bg-violet-50', bulletBg: 'bg-violet-500', borderHover: 'hover:border-violet-300' },
   amber: { iconBg: 'bg-amber-100', iconText: 'text-amber-600', activeBg: 'bg-amber-600', hoverBg: 'hover:bg-amber-50', bulletBg: 'bg-amber-500', borderHover: 'hover:border-amber-300' },
